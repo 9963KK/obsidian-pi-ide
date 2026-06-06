@@ -5,6 +5,6 @@
   "minAppVersion": "1.5.0",
   "description": "Connect Obsidian to Pi Coding Agent via the pi-ide protocol: current file, cursor, selection, and edit confirmations.",
   "author": "Jenkins Chen",
-  "authorUrl": "https://github.com/jenkinschen",
+  "authorUrl": "https://github.com/9963KK",
   "isDesktopOnly": true
 }
