@@ -1,0 +1,46 @@
+.pi-ide-modal {
+  width: min(90vw, 960px);
+}
+
+.pi-ide-modal .pi-ide-meta {
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  word-break: break-all;
+}
+
+.pi-ide-modal .pi-ide-textarea {
+  width: 100%;
+  height: min(65vh, 720px);
+  min-height: 320px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  line-height: 1.45;
+  resize: vertical;
+  white-space: pre;
+}
+
+.pi-ide-modal .pi-ide-buttons,
+.pi-ide-install-modal .pi-ide-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pi-ide-status-ok {
+  color: var(--text-success);
+}
+
+.pi-ide-status-warning {
+  color: var(--text-warning);
+}
+
+.pi-ide-command-output {
+  white-space: pre-wrap;
+  background: var(--background-secondary);
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
