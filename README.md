@@ -75,6 +75,15 @@ This plugin is structured for BRAT. Add the GitHub repository URL in BRAT, then 
 5. Pi injects current editor context into agent turns.
 6. When Pi edits a vault file, the plugin handles `openDiff` and either confirms or rejects the proposed final contents.
 
+
+## Disclosures for Obsidian Community review
+
+- **Network use:** The plugin starts a local-only WebSocket server on `127.0.0.1` so Pi can connect to Obsidian. It does not connect to any remote service by itself. If the user chooses **Install now**, the plugin runs `pi install npm:@ldelossa/pi-ide`, and Pi/npm may access the network to install that package.
+- **Files outside the vault:** The plugin writes a lockfile to `~/.pi/ide/<port>.lock` so Pi can discover the running Obsidian bridge. It also checks `~/.pi/agent/npm/node_modules/@ldelossa/pi-ide/package.json` and may run `pi list` to detect whether the Pi-side package is installed.
+- **Shell command execution:** The plugin can run `pi list` for detection and, only after explicit user action, `pi install npm:@ldelossa/pi-ide` to install the Pi-side package.
+- **Telemetry:** The plugin does not collect telemetry.
+- **Data scope:** The plugin sends the active Markdown file path, cursor, and selected text only to a locally connected Pi process authenticated by the generated lockfile token.
+
 ## Security notes
 
 - This plugin is desktop-only because it uses Node APIs and a local WebSocket server.
