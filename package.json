@@ -1,6 +1,6 @@
 {
   "name": "obsidian-pi-ide",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Connect Obsidian to Pi Coding Agent via the pi-ide protocol.",
   "main": "main.js",
   "scripts": {

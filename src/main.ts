@@ -4,7 +4,6 @@ import { exec } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Duplex } from "node:stream";
@@ -23,6 +22,46 @@ type JsonRpcMessage = { jsonrpc?: string; id?: string | number | null; method?: 
 type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number | null | undefined; result?: JsonValue | JsonObject; error?: { code: number; message: string } };
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 type WebSocketClient = { socket: Duplex; buffer: Buffer; alive: boolean };
+type LockfileData = { pid: number; ideName?: string };
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseJsonRpcMessage(text: string): JsonRpcMessage | null {
+  const parsed: unknown = JSON.parse(text);
+  if (!isJsonObject(parsed)) return null;
+  const rawId = parsed.id;
+  const rawMethod = parsed.method;
+  const rawParams = parsed.params;
+  const id: JsonRpcMessage["id"] = typeof rawId === "string" ? rawId : typeof rawId === "number" ? rawId : rawId === null ? null : undefined;
+  return {
+    jsonrpc: typeof parsed.jsonrpc === "string" ? parsed.jsonrpc : undefined,
+    id,
+    method: typeof rawMethod === "string" ? rawMethod : undefined,
+    params: isJsonObject(rawParams) ? rawParams : undefined,
+  };
+}
+
+function parseLockfileData(text: string): LockfileData | null {
+  const parsed: unknown = JSON.parse(text);
+  if (!isJsonObject(parsed)) return null;
+  const pid = parsed.pid;
+  const ideName = parsed.ideName;
+  if (typeof pid !== "number") return null;
+  return { pid, ideName: typeof ideName === "string" ? ideName : undefined };
+}
+
+function normalizeSettings(data: unknown): PiIdeSettings {
+  const input = isJsonObject(data) ? data : {};
+  return {
+    lockDir: typeof input.lockDir === "string" && input.lockDir.trim() ? input.lockDir : DEFAULT_SETTINGS.lockDir,
+    autoAcceptChanges: typeof input.autoAcceptChanges === "boolean" ? input.autoAcceptChanges : DEFAULT_SETTINGS.autoAcceptChanges,
+    checkPiIdeOnStartup: typeof input.checkPiIdeOnStartup === "boolean" ? input.checkPiIdeOnStartup : DEFAULT_SETTINGS.checkPiIdeOnStartup,
+    showStartupNotice: typeof input.showStartupNotice === "boolean" ? input.showStartupNotice : DEFAULT_SETTINGS.showStartupNotice,
+  };
+}
+
 type SelectionState = {
   text: string;
   filePath: string;
@@ -126,14 +165,15 @@ class JsonRpcWebSocketServer {
 
   start(): Promise<number> {
     return new Promise((resolve, reject) => {
-      this.server = http.createServer((_req, res) => {
+      const server = http.createServer((_req, res) => {
         res.writeHead(400);
         res.end("WebSocket endpoint only");
       });
-      this.server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
-      this.server.on("error", reject);
-      this.server.listen(0, "127.0.0.1", () => {
-        const address = this.server!.address();
+      this.server = server;
+      server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
         if (typeof address === "object" && address) {
           this.pingTimer = window.setInterval(() => this.pingClients(), 30_000);
           resolve(address.port);
@@ -218,10 +258,13 @@ class JsonRpcWebSocketServer {
   }
 
   private async handleText(client: WebSocketClient, text: string): Promise<void> {
-    let message: JsonRpcMessage;
+    let message: JsonRpcMessage | null;
     try {
-      message = JSON.parse(text);
+      message = parseJsonRpcMessage(text);
     } catch {
+      message = null;
+    }
+    if (!message) {
       client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
       return;
     }
@@ -377,7 +420,7 @@ function ensureDir(dir: string): void {
 }
 
 function removeLockfile(lockDir: string, port: number): void {
-  try { fs.unlinkSync(path.join(lockDir, `${port}.lock`)); } catch {}
+  try { fs.unlinkSync(path.join(lockDir, `${port}.lock`)); } catch { /* ignore missing lockfile */ }
 }
 
 function cleanupStaleLockfiles(lockDir: string): void {
@@ -386,7 +429,8 @@ function cleanupStaleLockfiles(lockDir: string): void {
   for (const entry of entries) {
     const file = path.join(lockDir, entry);
     try {
-      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      const data = parseLockfileData(fs.readFileSync(file, "utf8"));
+      if (!data) throw new Error("invalid lockfile");
       if (data.ideName && data.ideName !== "Obsidian") continue;
       if (data.pid === process.pid) throw new Error("own stale lock");
       process.kill(data.pid, 0);
@@ -435,11 +479,11 @@ function getCurrentSelection(app: App): SelectionState | null {
   };
 }
 
-function toolResultText(text: string): any {
+function toolResultText(text: string): ToolResult {
   return { content: [{ type: "text", text }] };
 }
 
-function toolResultJson(value: any): any {
+function toolResultJson(value: unknown): ToolResult {
   return toolResultText(JSON.stringify(value));
 }
 
@@ -515,7 +559,7 @@ export default class PiIdePlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = normalizeSettings(await this.loadData());
   }
 
   async saveSettings(): Promise<void> {
@@ -673,8 +717,6 @@ class PiIdeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Pi IDE").setHeading();
-
     new Setting(containerEl)
       .setName("Pi-side package")
       .setDesc("Check whether npm:@ldelossa/pi-ide is installed, or install it automatically for the user.")
