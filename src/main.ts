@@ -4,8 +4,10 @@ import { exec } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Duplex } from "node:stream";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -15,8 +17,12 @@ const OPCODE = { TEXT: 1, CLOSE: 8, PING: 9, PONG: 10 } as const;
 const DEFAULT_LOCK_DIR = path.join(os.homedir(), ".pi", "ide");
 const PI_IDE_PACKAGE = "npm:@ldelossa/pi-ide";
 
-type JsonRpcMessage = { jsonrpc?: string; id?: string | number | null; method?: string; params?: any };
-type WebSocketClient = { socket: any; buffer: Buffer; alive: boolean };
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = Record<string, JsonValue | undefined>;
+type JsonRpcMessage = { jsonrpc?: string; id?: string | number | null; method?: string; params?: JsonObject };
+type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number | null | undefined; result?: JsonValue | JsonObject; error?: { code: number; message: string } };
+type ToolResult = { content: Array<{ type: "text"; text: string }> };
+type WebSocketClient = { socket: Duplex; buffer: Buffer; alive: boolean };
 type SelectionState = {
   text: string;
   filePath: string;
@@ -114,7 +120,7 @@ class JsonRpcWebSocketServer {
 
   constructor(
     private readonly authToken: string,
-    private readonly onRequest: (message: JsonRpcMessage) => Promise<any>,
+    private readonly onRequest: (message: JsonRpcMessage) => Promise<JsonRpcResponse>,
     private readonly onConnect?: () => void,
   ) {}
 
@@ -129,7 +135,7 @@ class JsonRpcWebSocketServer {
       this.server.listen(0, "127.0.0.1", () => {
         const address = this.server!.address();
         if (typeof address === "object" && address) {
-          this.pingTimer = activeWindow.setInterval(() => this.pingClients(), 30_000);
+          this.pingTimer = window.setInterval(() => this.pingClients(), 30_000);
           resolve(address.port);
         } else {
           reject(new Error("Could not bind WebSocket server"));
@@ -140,7 +146,7 @@ class JsonRpcWebSocketServer {
 
   stop(): void {
     if (this.pingTimer !== null) {
-      activeWindow.clearInterval(this.pingTimer);
+      window.clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
     for (const client of this.clients) client.socket.destroy();
@@ -149,7 +155,7 @@ class JsonRpcWebSocketServer {
     this.server = null;
   }
 
-  broadcast(method: string, params: any): void {
+  broadcast(method: string, params: JsonObject): void {
     const payload = JSON.stringify({ jsonrpc: "2.0", method, params });
     const frame = makeFrame(OPCODE.TEXT, payload);
     for (const client of this.clients) {
@@ -157,7 +163,7 @@ class JsonRpcWebSocketServer {
     }
   }
 
-  private handleUpgrade(req: http.IncomingMessage, socket: any, head: Buffer): void {
+  private handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     if (req.headers[AUTH_HEADER] !== this.authToken) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
@@ -223,8 +229,8 @@ class JsonRpcWebSocketServer {
     try {
       const response = await this.onRequest(message);
       if (client.socket.writable) client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(response)));
-    } catch (err: any) {
-      const response = { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: err?.message || String(err) } };
+    } catch (err: unknown) {
+      const response: JsonRpcResponse = { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: errorMessage(err) } };
       if (client.socket.writable) client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(response)));
     }
   }
@@ -322,23 +328,48 @@ class PiIdeInstallModal extends Modal {
     const copy = buttons.createEl("button", { text: "Copy command" });
     const later = buttons.createEl("button", { text: "Later" });
 
-    install.addEventListener("click", async () => {
-      install.disabled = true;
-      this.outputEl.show();
-      this.outputEl.setText("Installing...");
-      const result = await this.plugin.installPiIdePackage();
-      this.outputEl.setText(result.output);
-      install.disabled = false;
-      if (result.ok) {
-        new Notice("Pi IDE package installed. Restart or /reload Pi, then run /ide.");
-      }
+    install.addEventListener("click", () => {
+      void (async () => {
+        install.disabled = true;
+        this.outputEl.show();
+        this.outputEl.setText("Installing...");
+        const result = await this.plugin.installPiIdePackage();
+        this.outputEl.setText(result.output);
+        install.disabled = false;
+        if (result.ok) {
+          new Notice("Pi IDE package installed. Restart or /reload Pi, then run /ide.");
+        }
+      })();
     });
-    copy.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(`pi install ${PI_IDE_PACKAGE}`);
-      new Notice("Install command copied");
+    copy.addEventListener("click", () => {
+      void (async () => {
+        await navigator.clipboard.writeText(`pi install ${PI_IDE_PACKAGE}`);
+        new Notice("Install command copied");
+      })();
     });
     later.addEventListener("click", () => this.close());
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function execErrorOutput(err: unknown): string {
+  const maybe = err as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  return [maybe.stdout, maybe.stderr, maybe.message]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join("\n") || errorMessage(err);
+}
+
+function getStringParam(params: JsonObject | undefined, key: string): string {
+  const value = params?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function getObjectParam(params: JsonObject | undefined, key: string): JsonObject {
+  const value = params?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 }
 
 function ensureDir(dir: string): void {
@@ -360,13 +391,14 @@ function cleanupStaleLockfiles(lockDir: string): void {
       if (data.pid === process.pid) throw new Error("own stale lock");
       process.kill(data.pid, 0);
     } catch {
-      try { fs.unlinkSync(file); } catch {}
+      try { fs.unlinkSync(file); } catch { /* ignore missing lockfile */ }
     }
   }
 }
 
 function getVaultBasePath(app: App): string {
-  return (app.vault.adapter as any).getBasePath?.() || "";
+  const adapter = app.vault.adapter as unknown as { getBasePath?: () => string };
+  return adapter.getBasePath?.() || "";
 }
 
 function toAbsoluteVaultPath(app: App, vaultPath: string): string {
@@ -554,17 +586,17 @@ export default class PiIdePlugin extends Plugin {
     });
   }
 
-  async handleRequest(message: JsonRpcMessage): Promise<any> {
+  async handleRequest(message: JsonRpcMessage): Promise<JsonRpcResponse> {
     switch (message.method) {
       case "initialize":
-        return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params?.protocolVersion || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "obsidian-pi-ide", version: this.manifest.version } } };
+        return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: getStringParam(message.params, "protocolVersion") || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "obsidian-pi-ide", version: this.manifest.version } } };
       case "notifications/initialized":
         this.scheduleBroadcast(true);
         return { jsonrpc: "2.0", id: message.id, result: {} };
       case "tools/list":
         return { jsonrpc: "2.0", id: message.id, result: { tools } };
       case "tools/call": {
-        const result = await this.callTool(message.params?.name, message.params?.arguments || {});
+        const result = await this.callTool(getStringParam(message.params, "name"), getObjectParam(message.params, "arguments"));
         return { jsonrpc: "2.0", id: message.id, result };
       }
       default:
@@ -572,7 +604,7 @@ export default class PiIdePlugin extends Plugin {
     }
   }
 
-  async callTool(name: string, args: any): Promise<any> {
+  async callTool(name: string, args: JsonObject): Promise<ToolResult> {
     switch (name) {
       case "openDiff": return this.openDiff(args);
       case "close_tab": return toolResultText("TAB_CLOSED");
@@ -581,11 +613,11 @@ export default class PiIdePlugin extends Plugin {
     }
   }
 
-  async openDiff(args: any): Promise<any> {
-    const newFilePath = String(args.new_file_path || "");
-    const oldFilePath = String(args.old_file_path || newFilePath);
-    const newFileContents = String(args.new_file_contents ?? "");
-    const tabName = String(args.tab_name || "pi-change");
+  async openDiff(args: JsonObject): Promise<ToolResult> {
+    const newFilePath = getStringParam(args, "new_file_path");
+    const oldFilePath = getStringParam(args, "old_file_path") || newFilePath;
+    const newFileContents = getStringParam(args, "new_file_contents");
+    const tabName = getStringParam(args, "tab_name") || "pi-change";
     const relative = toVaultRelativePath(this.app, newFilePath);
     if (!relative) {
       new Notice("Pi IDE rejected change outside this vault");
@@ -622,8 +654,8 @@ export default class PiIdePlugin extends Plugin {
     try {
       const { stdout, stderr } = await execAsync(`pi install ${PI_IDE_PACKAGE}`, { timeout: 120_000, maxBuffer: 1024 * 1024 * 4 });
       return { ok: true, output: [stdout, stderr].filter(Boolean).join("\n") || "Installed." };
-    } catch (err: any) {
-      return { ok: false, output: [err.stdout, err.stderr, err.message].filter(Boolean).join("\n") };
+    } catch (err: unknown) {
+      return { ok: false, output: execErrorOutput(err) };
     }
   }
 
@@ -641,7 +673,7 @@ class PiIdeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Pi IDE" });
+    new Setting(containerEl).setName("Pi IDE").setHeading();
 
     new Setting(containerEl)
       .setName("Pi-side package")

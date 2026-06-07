@@ -1,9 +1,9 @@
 {
   "id": "pi-ide",
   "name": "Pi IDE",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.5.0",
-  "description": "Connect Obsidian to Pi Coding Agent via the pi-ide protocol: current file, cursor, selection, and edit confirmations.",
+  "description": "Connect notes to Pi Coding Agent via the pi-ide protocol: current file, cursor, selection, and edit confirmations.",
   "author": "Jenkins Chen",
   "authorUrl": "https://github.com/9963KK",
   "isDesktopOnly": true

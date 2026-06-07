@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "node:process";
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
 
 const production = process.argv[2] === "production";
 const watch = process.argv.includes("--watch");
@@ -9,7 +9,7 @@ const context = await esbuild.context({
   banner: { js: "/* obsidian-pi-ide */" },
   entryPoints: ["src/main.ts"],
   bundle: true,
-  external: ["obsidian", "electron", "@codemirror/view", ...builtins],
+  external: ["obsidian", "electron", "@codemirror/view", ...builtinModules, ...builtinModules.map((m) => `node:${m}`)],
   format: "cjs",
   target: "es2022",
   logLevel: "info",
